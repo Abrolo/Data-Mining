@@ -4,6 +4,10 @@ import os
 from bs4 import BeautifulSoup
 import time
 
+import numpy as np
+from collections import defaultdict
+from itertools import combinations
+
 
 class Shingling:
     """
@@ -46,7 +50,7 @@ class Shingling:
         for i in range(len(document) - self.k + 1):
             shingle = document[i:i + self.k]
             shingles.add(self._rolling_hash(shingle))
-        return shingles
+        return set(sorted(shingles))
 
     def get_text_shingles(self, document):
         """
@@ -151,32 +155,60 @@ class CompareSignatures:
 
 
 class LSH:
-    """
-    A class for Locality Sensitive Hashing to find similar items based on MinHash signatures.
-
-    Attributes:
-    band_size (int): The size of each band for hashing.
-    threshold (float): The threshold for determining similarity.
-    """
-    def __init__(self, band_size, threshold):
-        self.band_size = band_size
+    def __init__(self, num_bands, threshold):
+        self.num_bands = num_bands
         self.threshold = threshold
-
-    def find_similar(self, signatures):
-        buckets = defaultdict(list)
-        for idx, signature in enumerate(signatures):
-            for i in range(0, len(signature), self.band_size):
-                band = tuple(signature[i:i + self.band_size])
-                buckets[band].append(idx)
+        self.buckets = defaultdict(list)
+        self.signatures = []
+    
+    def _hash_band(self, band):
+        """
+        Hashes a band (a tuple) of a signature.
+        For simplicity, we're using the built-in hash function.
+        """
+        return hash(band)
+    
+    def add_signature(self, signature):
+        """
+        Adds a signature to the LSH object and hashes its bands.
+        """
+        self.signatures.append(signature)
+        idx = len(self.signatures) - 1
+        num_rows = int(len(signature) / self.num_bands)
         
+        # Hash each band of the signature and add the index to the corresponding bucket
+        for band_idx in range(self.num_bands):
+            start = band_idx * num_rows
+            end = (band_idx + 1) * num_rows
+            band = tuple(signature[start:end])
+            hashed_band = self._hash_band(band)
+            print(f" hashed band: {hashed_band}")
+            self.buckets[hashed_band].append(idx)
+    
+    def find_candidates(self):
+        """
+        Finds candidate pairs of signatures that agree on at least a fraction t of their components.
+        """
         candidates = set()
-        for idx_list in buckets.values():
-            if len(idx_list) > 1:
-                for i in idx_list:
-                    for j in idx_list:
-                        if i < j:
-                            candidates.add((i, j))
+        for bucket in self.buckets.values():
+            if len(bucket) > 1:
+                for pair in combinations(bucket, 2):
+                    candidates.add(pair)
         return candidates
+    
+    def find_similar(self):
+        """
+        After finding candidate pairs, this method verifies if they agree on at least a fraction t of their components.
+        """
+        candidates = self.find_candidates()
+        similar_pairs = set()
+        for i, j in candidates:
+            sig1, sig2 = self.signatures[i], self.signatures[j]
+            similarity = sum(1 for x, y in zip(sig1, sig2) if x == y) / len(sig1)
+            if similarity >= self.threshold:
+                similar_pairs.add((i, j))
+        return similar_pairs
+
 
 
 # Function to parse SGM file and extract text
@@ -238,7 +270,7 @@ def general_tests():
 
     # MinHashing
     signature_length = 100
-    universe_size = 10000
+    universe_size = 1000000
     minhasher = MinHashing(signature_length, universe_size)
     signatures = [minhasher.create_signature(shingles) for shingles in shingled_docs]
 
@@ -274,4 +306,63 @@ def general_tests():
 
 # print(text1.intersection(text2))
 
-evaluation()
+#evaluation()
+
+file_path = os.path.join("extracted_files", "reut2-000.sgm")
+articles = parse_sgm(file_path)
+k = 10  # Length of each shingle
+# Shingling
+shingle_length = 10
+shingler = Shingling(shingle_length)
+shingled_docs = [shingler.shingle_document(doc) for doc in articles]
+
+comparer = CompareSets()
+res = comparer.jaccard_similarity(shingled_docs[0], shingled_docs[1])
+print(res)
+
+# MinHashing
+signature_length = 100
+universe_size = 1000000
+minhasher = MinHashing(signature_length, universe_size)
+signatures = [minhasher.create_signature(shingles) for shingles in shingled_docs]
+
+print(signatures[0])
+
+compare_sig = CompareSignatures()
+sig_res = compare_sig.signature_similarity(signatures[0], signatures[1])
+print(sig_res)
+
+
+# LSH 
+# band_size = 10
+# threshold = 0.5
+# lsh = LSH(band_size, threshold)
+# similar_pairs = lsh.find_similar([signatures[29], signatures[52]])
+# # Display similar pairs
+# print("Similar Document Pairs:")
+# for pair in similar_pairs:
+#     doc1, doc2 = pair
+#     jaccard_sim = comparer.jaccard_similarity(shingled_docs[doc1], shingled_docs[doc2])
+#     minhash_sim = compare_sig.signature_similarity(signatures[doc1], signatures[doc2])
+#     print(f"Document {doc1} is similar to Document {doc2}")
+#     print(f"Jaccard Similarity (Shingle Sets): {jaccard_sim:.2f}")
+#     print(f"MinHash Signature Similarity: {minhash_sim:.2f}")
+
+
+    
+# Determine the number of bands based on the similarity threshold and number of rows per band
+threshold = 0.5
+n = len(signatures[0])  # Number of components in a signature
+r = int(n * threshold)  # Number of rows per band
+b = int(n / r)  # Number of bands
+
+# Initialize LSH
+lsh = LSH(num_bands=b, threshold=threshold)
+
+# Add signatures to LSH
+for sig in [signatures[859], signatures[874]]:
+    lsh.add_signature(sig)
+
+# Find similar pairs
+similar_pairs = lsh.find_similar()
+print(similar_pairs)
