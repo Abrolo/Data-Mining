@@ -3,6 +3,7 @@ import random
 import os
 from bs4 import BeautifulSoup
 import time
+from matplotlib import pyplot as plt
 
 import numpy as np
 from collections import defaultdict
@@ -21,7 +22,7 @@ class Shingling:
         self.k = k
         self.modulo = modulo
 
-    def _rolling_hash(self, shingle):
+    def rolling_hash(self, shingle):
         """
         Generates a hash value for a given shingle.
         
@@ -49,7 +50,7 @@ class Shingling:
         shingles = set()
         for i in range(len(document) - self.k + 1):
             shingle = document[i:i + self.k]
-            shingles.add(self._rolling_hash(shingle))
+            shingles.add(self.rolling_hash(shingle))
         return set(sorted(shingles))
 
     def get_text_shingles(self, document):
@@ -102,17 +103,17 @@ class MinHashing:
         self.n = n
         self.hash_functions = [self._make_hash_function(p, universe_size) for p in range(n)]
 
-    def _make_hash_function(self, seed, universe_size):
+    def _make_hash_function(self, s, universe_size):
         """
         Creates a hash function with random coefficients.
 
         Args:
-        seed (int): A seed value for random number generation.
         universe_size (int): The universe size for the hash function.
 
         Returns:
         function: A hash function.
         """
+        random.seed(s)
         a = random.randint(1, universe_size)
         b = random.randint(0, universe_size)
         return lambda x: (a * hash(x) + b) % universe_size
@@ -175,14 +176,12 @@ class LSH:
         self.signatures.append(signature)
         idx = len(self.signatures) - 1
         num_rows = int(len(signature) / self.num_bands)
-        
         # Hash each band of the signature and add the index to the corresponding bucket
         for band_idx in range(self.num_bands):
             start = band_idx * num_rows
             end = (band_idx + 1) * num_rows
             band = tuple(signature[start:end])
             hashed_band = self._hash_band(band)
-            print(f" hashed band: {hashed_band}")
             self.buckets[hashed_band].append(idx)
     
     def find_candidates(self):
@@ -219,150 +218,67 @@ def parse_sgm(file_path):
         return texts
     
 # Function to process documents through all stages
-def process_documents(docs, shingler, minhasher, lsh):
+def process_documents(docs, shingler, minhasher, threshold):
     # Shingling
     shingled_docs = [shingler.shingle_document(doc) for doc in docs]
 
     # MinHashing
     signatures = [minhasher.create_signature(shingles) for shingles in shingled_docs]
 
-    # LSH
-    similar_pairs = lsh.find_similar(signatures)
+    lsh = LSH(num_bands=10, threshold=threshold)
+    for signature in signatures:
+        lsh.add_signature(signature)
+
+    similar_pairs = lsh.find_similar()
     return similar_pairs
 
-def evaluation():
+def evaluation(threshold, k):
     # Load the articles
     file_path = os.path.join("extracted_files", "reut2-000.sgm")
     articles = parse_sgm(file_path)
-
+    print("Total number of documents:", len(articles))
+    print(f"Shingle size: {k}, similarity threshold: {threshold}")
     # Initialize the classes
-    shingler = Shingling(k=10)
+    shingler = Shingling(k=5)
     minhasher = MinHashing(n=100, universe_size=10000)
-    lsh = LSH(band_size=10, threshold=0.5)
 
-    # Define the different batch sizes
-    batch_sizes = [10, 50, 100, 150, 200, 250]
+    total_len = len(articles)
+
+    # Calculate dynamic batch sizes
+    batch_sizes = np.linspace(0, total_len, 7, dtype=int)[1:]
+
+ # Lists to store batch sizes and corresponding runtimes
+    batch_sizes_list = []
+    runtimes_list = []
+    num_items = []
 
     # Evaluate runtime for different batch sizes
     for batch_size in batch_sizes:
         start_time = time.time()
-        process_documents(articles[:batch_size], shingler, minhasher, lsh)
+        items = process_documents(articles[:batch_size], shingler, minhasher, threshold)
         end_time = time.time()
-        print(f"Runtime for {batch_size} articles: {end_time - start_time:.2f} seconds")
+        runtime = end_time - start_time
+
+        print(f"Runtime for {batch_size} articles: {runtime:.2f} seconds")
+        print(f"Similar items found: {len(items)}")
+        print(f"-----------------------------------------------------------")
+
+        # Store batch size and runtime for plotting
+        batch_sizes_list.append(batch_size)
+        runtimes_list.append(runtime)
+
+    # Plotting
+    plt.plot(batch_sizes_list, runtimes_list, marker='o')
+    plt.title('Runtime as a Function of Documents')
+    plt.xlabel('Number of documents')
+    plt.ylabel('Runtime (seconds)')
+    plt.show()
 
 
-def general_tests():
-    file_path = os.path.join("extracted_files", "reut2-000.sgm")
+# print("Set the shingle size: ")
+# k = input()
 
-    articles = parse_sgm(file_path)
+# print("Set the threshold: ")
+# threshold = input()
 
-    k = 10  # Length of each shingle
-
-    # Shingling
-    shingle_length = 10
-    shingler = Shingling(shingle_length)
-    shingled_docs = [shingler.shingle_document(doc) for doc in articles[:250]]
-
-    comparer = CompareSets()
-    res = comparer.jaccard_similarity(shingled_docs[0], shingled_docs[1])
-
-    print(res)
-
-    # MinHashing
-    signature_length = 100
-    universe_size = 1000000
-    minhasher = MinHashing(signature_length, universe_size)
-    signatures = [minhasher.create_signature(shingles) for shingles in shingled_docs]
-
-    compare_sig = CompareSignatures()
-    # sig_res = compare_sig.signature_similarity(signatures[4], signatures[16])
-    # print(sig_res)
-
-
-    # LSH 
-    band_size = 10
-    threshold = 0.00000000000001
-    lsh = LSH(band_size, threshold)
-    similar_pairs = lsh.find_similar(signatures)
-
-    # Display similar pairs
-    print("Similar Document Pairs:")
-    for pair in similar_pairs:
-        doc1, doc2 = pair
-        jaccard_sim = comparer.jaccard_similarity(shingled_docs[doc1], shingled_docs[doc2])
-        minhash_sim = compare_sig.signature_similarity(signatures[doc1], signatures[doc2])
-
-        print(f"Document {doc1} is similar to Document {doc2}")
-        print(f"Jaccard Similarity (Shingle Sets): {jaccard_sim:.2f}")
-        print(f"MinHash Signature Similarity: {minhash_sim:.2f}")
-
-    # text1= shingler.get_text_shingles(articles[29])
-    # text2= shingler.get_text_shingles(articles[52])
-
-    # print(articles[29])
-    # print("-----------------")
-    # print(articles[52])
-
-
-# print(text1.intersection(text2))
-
-#evaluation()
-
-file_path = os.path.join("extracted_files", "reut2-000.sgm")
-articles = parse_sgm(file_path)
-k = 10  # Length of each shingle
-# Shingling
-shingle_length = 10
-shingler = Shingling(shingle_length)
-shingled_docs = [shingler.shingle_document(doc) for doc in articles]
-
-comparer = CompareSets()
-res = comparer.jaccard_similarity(shingled_docs[0], shingled_docs[1])
-print(res)
-
-# MinHashing
-signature_length = 100
-universe_size = 1000000
-minhasher = MinHashing(signature_length, universe_size)
-signatures = [minhasher.create_signature(shingles) for shingles in shingled_docs]
-
-print(signatures[0])
-
-compare_sig = CompareSignatures()
-sig_res = compare_sig.signature_similarity(signatures[0], signatures[1])
-print(sig_res)
-
-
-# LSH 
-# band_size = 10
-# threshold = 0.5
-# lsh = LSH(band_size, threshold)
-# similar_pairs = lsh.find_similar([signatures[29], signatures[52]])
-# # Display similar pairs
-# print("Similar Document Pairs:")
-# for pair in similar_pairs:
-#     doc1, doc2 = pair
-#     jaccard_sim = comparer.jaccard_similarity(shingled_docs[doc1], shingled_docs[doc2])
-#     minhash_sim = compare_sig.signature_similarity(signatures[doc1], signatures[doc2])
-#     print(f"Document {doc1} is similar to Document {doc2}")
-#     print(f"Jaccard Similarity (Shingle Sets): {jaccard_sim:.2f}")
-#     print(f"MinHash Signature Similarity: {minhash_sim:.2f}")
-
-
-    
-# Determine the number of bands based on the similarity threshold and number of rows per band
-threshold = 0.5
-n = len(signatures[0])  # Number of components in a signature
-r = int(n * threshold)  # Number of rows per band
-b = int(n / r)  # Number of bands
-
-# Initialize LSH
-lsh = LSH(num_bands=b, threshold=threshold)
-
-# Add signatures to LSH
-for sig in [signatures[859], signatures[874]]:
-    lsh.add_signature(sig)
-
-# Find similar pairs
-similar_pairs = lsh.find_similar()
-print(similar_pairs)
+evaluation(threshold=0.8, k=5)
